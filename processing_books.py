@@ -3,6 +3,9 @@ import pandas as pd
 import textblob as tb
 import re
 from wordnik import *
+import urllib2
+from unidecode import unidecode
+from textstat.textstat import textstat
 
 apiUrl = 'http://api.wordnik.com/v4'
 apiKey = '21eadfda10890c9c9200b0e672503c34c23ada14b03d86121'
@@ -33,7 +36,14 @@ def make_text_blocks(txt):
 		 	whitespace_count = 0
 	return blocks
 
-blocks = make_text_blocks(txt)
+bl = make_text_blocks(txt)
+
+blocks = []
+for b in bl:
+	dc = unidecode(unicode(b, encoding = "utf-8"))
+	blocks.append(dc)
+
+
 
 ### FEATURE DEFINITION
 
@@ -58,58 +68,78 @@ def make_frames(blocks, level):
 	"""
 	assert level in ('word', 'sentence', 'block'), \
 	'level parameter must be one of: \'word\', \'sentence\', \'block\''
-
-	frames = []
-	for b in blocks:
-		blob = tb.TextBlob(b.decode('utf-8','ignore'))
-		if level == 'block':
-			frames.append(pd.DataFrame(b, columns = ['block']))
-		elif level == 'sentence':
-			sentences = list(blob.sentences)
-			frames.append(pd.DataFrame(sentences, columns = ['sentence']))
-		else:
-			words = list(blob.words)
-			frames.append(pd.DataFrame(words, columns = ['word']))
-	return frames
+	
+	if level == 'block':
+		return pd.DataFrame(blocks, columns = ['block',])
+	else:
+		frames = []
+		for b in blocks:
+			blob = tb.TextBlob(b.decode('utf-8','ignore'))
+			if level == 'sentence':
+				sentences = [str(i) for i in blob.sentences]
+				frames.append(pd.DataFrame(sentences, columns = ['sentence']))
+			else:
+				words = list(blob.words)
+				frames.append(pd.DataFrame(words, columns = ['word']))
+		return frames
 
 # Word-level features: length of word, number of syllables, year of most common
 # usage, country of origin, scrabble score, function words
+
+def get_lemma(word):
+	if word in ('is','us','was','as','its'):
+		return word
+	return str(tb.TextBlob(word).words.lemmatize()[0])
+
+syllable_dict = {}
 
 def get_syllables(word):
 	"""
 	Takes in a word and returns the number of syllables in that word as an int.
 	Data on syllables obtained through the Wordnik API
 	"""
-	try: syllables = wordApi.getHyphenation(word)
-	except UnicodeEncodeError:
-		return 0
-	if syllables is None:
-		return 0
-	return len(syllables)
+	if word not in syllable_dict:
+		try: syllables = wordApi.getHyphenation(word)
+		except UnicodeEncodeError:
+			syllable_dict[word] = 0
+		if not syllables:
+			syllables = wordApi.getHyphenation(word.lower())
+			if not syllables:
+				syllables = wordApi.getHyphenation(word.capitalize())
+				if not syllables:
+					syllable_dict[word] = 0
+					return syllable_dict[word]
+		syllable_dict[word] = len(syllables)
+	return syllable_dict[word]
+
+frequency_dict = {}
 
 def get_max_frequency_year(word):
 	"""
 	Takes in a word and uses the Wordnik API to return the year between 1800
 	and the present in which that word was most commonly used as an int.
 	"""
-	if '\'' in word:
-		return 0
-	try:
-		freq = wordApi.getWordFrequency(word)
-	except UnicodeEncodeError:
-		return 0
-	if not freq:
-		return 0
-	year_counts = []
-	for i in freq.frequency:
-		year = i.year
-		count = i.count
-		year_counts.append((year,count))
-	df = pd.DataFrame(year_counts, columns = ['year','count'])
-	try: return df['year'].loc[df['count'].idxmax()]
-	except ValueError:
-		print word, '\n'
-		raise
+	if word not in frequency_dict:
+		if '\'' in word:
+			frequency_dict[word] = 0
+			return frequency_dict[word]
+		else:
+			try:
+				freq = wordApi.getWordFrequency(word)
+			except urllib2.HTTPError:
+				try:
+					freq = wordApi.getWordFrequency(word.lower())
+				except urllib2.HTTPError:
+					frequency_dict[word] = 0
+					return frequency_dict[word]
+		if not freq or len(freq.frequency) == 0:
+			frequency_dict[word] = 0
+		else:
+			year_counts = {}
+			for i in freq.frequency:
+				year_counts[i.year] = i.count
+			frequency_dict[word] = sorted(year_counts, key = year_counts.get, reverse = True)[0]
+	return frequency_dict[word]
 
 def get_etymology(word):
 	"""
@@ -119,14 +149,21 @@ def get_etymology(word):
 	### FIGURE OUT HOW TO PARSE WORDNIK ETYMOLOGY OBJECT RETURNED BY API
 	pass
 
+scrabble_dict = {}
+
 def get_scrabble_score(word):
 	"""
 	Takes in a word and uses the Wordnik API to return the number of points
 	that word is worth in a Scrabble game as an int.
 	"""
-	scrabble = wordApi.getScrabbleScore(word)
-	return scrabble.value
-
+	if word not in scrabble_dict:
+		try:
+			scrabble = wordApi.getScrabbleScore(word.lower())
+			scrabble_dict[word] = scrabble.value
+		except urllib2.HTTPError:
+			scrabble_dict[word] = 0
+	return scrabble_dict[word]
+	
 def make_function_word_cols(df):
 	"""
 	Takes in a word-level dataframe and returns a dataframe with a column added
@@ -143,29 +180,36 @@ def make_function_word_cols(df):
 					  'their', 'what','then', 'when', 'there', 'which', 'things',
 					  'who', 'this','will', 'to', 'with', 'up', 'would', 'upon',
 					  'you', 'from','it', 'on', 'that', 'was']
-	fw_cols = []
+	fw_cols = {}
 	for fw in function_words:
-		series = df['word'] == fw
-		column = pd.Series(series, name = fw)
-		fw_cols.append(column)
-	data = pd.concat(fw_cols, axis = 1)
+		values = df['lemma'] == fw
+		fw_cols[fw] = values
+	data = pd.DataFrame.from_dict(fw_cols)
 	merged = pd.merge(df, data, left_index = True, right_index = True)
 	return merged
 
+print 'functions defined'
 
 word_frames = make_frames(blocks, level = 'word')
 
-# This block of code may break and through urllib2 HTTPError
-counter = 0
-for df in word_frames:
-	df['lemma'] = df.word.map(lambda x: x.lemmatize())
+print 'word_frames made'
+
+def process_word_frame(df):
 	df['length'] = df.word.map(len)
-	df['syllable_count'] = df.word.map(get_syllables)
-	df['most_frequent_year'] = df.word.map(get_max_frequency_year)
-	# df['scrabble_score'] = df.word.map(get_scrabble_score)
+	print 'len done'
+	df['lemma'] = df.word.map(get_lemma)
+	print 'lemma done'
+	df['syllable_count'] = df.lemma.map(get_syllables)
+	print 'syllables done'
+	df['most_frequent_year'] = df.lemma.map(get_max_frequency_year)
+	print 'most frequent year done'
+	df['scrabble_score'] = df.lemma.map(get_scrabble_score)
+	print 'scrabble score done'
 	df = make_function_word_cols(df)
-	print 'Processed block number ', counter
-	counter += 1
+	print 'function word columns done'
+	return df
+
+
 
 # Once columns have all been created, figure out what aggregation is meaningful
 # E.g. for word length could be mean length, pct of words over 10 letters, etc.
@@ -175,9 +219,85 @@ for df in word_frames:
 # Sentence-level features: number of words, number of clauses, use of punctuation,
 # sentiment
 
-# sentence_frames = make_frames(txt, level = 'sentence')
+sentence_frames = make_frames(txt, level = 'sentence')
 
-# Block-level features: use of punctuation, pct dialogue, gender ratio of names
+def count_words(sentence):
+	"""
+	Takes in sentence as string and returns the number of words in that
+	sentence as an int. Excludes words containing single quote, since TextBlob
+	splits contractions and possesives into two words.
+	"""
+	blob = tb.TextBlob(sentence.decode('utf-8','ignore'))
+	word_list = [w for w in blob.words if '\'' not in w]
+	return len(word_list)
+
+def get_sentiment(sentence):
+	"""
+	Takes in sentence as string and uses TextBlob to return the sentiment
+	polarity of that sentence
+	"""
+	blob = tb.TextBlob(sentence.decode('utf-8','ignore'))
+	return blob.sentiment[0]
+
+def count_commas(sentence):
+	c = [i for i in df.sentence if i == ',']
+	return len(c)
+
+def count_semicolons(sentence):
+	c = [i for i in df.sentence if i == ';']
+	return len(c)
+
+def count_colons(sentence):
+	c = [i for i in df.sentence if i == ':']
+	return len(c)
+ 
+def count_hyphens(sentence):
+ 	c = [i for i in df.sentence if i == '-']
+	return len(c)
+
+for df in sentence_frames:
+	df['word_count'] = df.sentence.map(count_words)
+	df['sentiment'] = df.sentence.map(get_sentiment)
+	df['commas'] = df.sentence.map(count_commas)
+	df['semicolons'] = df.sentence.map(count_semicolons)
+	df['colons'] = df.sentence.map(count_colons)
+	df['hyphens'] = df.sentence.map(count_hyphens)
+
+
+
+# Block-level features: pct dialogue, gender ratio of names
 # mentioned, location of places mentioned, lexical diversity
 
-#b lock_frames = make_frames(txt, level = 'block')
+block_frame = make_frames(blocks, level = 'block')
+
+def get_lexical_diversity(block):
+	blob = tb.TextBlob(block.decode('utf-8','ignore'))
+	return len(set(blob.words))/float(len(blob.words))
+
+def get_grade_level(block):
+	consensus = textstat.text_standard(block)
+	return float(consensus[0]) + .5
+
+def get_pct_dialogue(block):
+	quote_lengths = []
+	start = None
+	end = None
+	for idx, val in enumerate(block):
+		if val == '"':
+			if not start:
+				start = idx
+			else:
+				end = idx
+				quote_lengths.append(end - start)
+				start = None
+				end = None
+	if start and not end:
+		quote_lengths.append(len(block) - start)
+	return sum(quote_lengths)/float(len(block))
+
+
+
+
+block_frame['lexical_diversity'] = block_frame.block.map(get_lexical_diversity)
+block_frame['grade_level'] = block_frame.block.map(get_grade_level)
+block_frame['difficult_words'] = block_frame.block.map(textstat.difficult_words)
