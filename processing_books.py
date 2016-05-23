@@ -6,6 +6,7 @@ from wordnik import *
 import urllib2
 from unidecode import unidecode
 from textstat.textstat import textstat
+import pickle
 
 apiUrl = 'http://api.wordnik.com/v4'
 apiKey = '21eadfda10890c9c9200b0e672503c34c23ada14b03d86121'
@@ -42,7 +43,6 @@ blocks = []
 for b in bl:
 	dc = unidecode(unicode(b, encoding = "utf-8"))
 	blocks.append(dc)
-
 
 
 ### FEATURE DEFINITION
@@ -301,3 +301,4 @@ def get_pct_dialogue(block):
 block_frame['lexical_diversity'] = block_frame.block.map(get_lexical_diversity)
 block_frame['grade_level'] = block_frame.block.map(get_grade_level)
 block_frame['difficult_words'] = block_frame.block.map(textstat.difficult_words)
+block_frame['pct_dialogue'] = block_frame.block.map(get_pct_dialogue)
