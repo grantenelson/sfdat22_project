@@ -1,0 +1,9 @@
+import pandas as pd
+import pickle
+
+with open('/Users/grantnelson/desktop/data_science/sfdat22_project/all_words_df.txt','rb') as f:
+	all_words = pickle.load(f)
+
+all_words = all_words.iloc[:,6:-1]
+
+all_words.groupby(['author','work','block']).sum()
